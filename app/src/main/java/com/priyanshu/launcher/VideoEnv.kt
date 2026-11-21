@@ -104,7 +104,7 @@ class VideoRenderer(private val context: Context, private val videoAsset: String
         }
     }
 
-    fun setPlaying(p: Boolean) {
+    fun applyPlaying(p: Boolean) {
         playing = p
         try {
             val mp = player ?: return
@@ -314,7 +314,7 @@ class VideoEnvView(context: Context, videoAsset: String) : GLSurfaceView(context
         if (running) return
         running = true
         onResume()
-        queueEvent { renderer.setPlaying(true) }
+        queueEvent { renderer.applyPlaying(true) }
         renderer.playing = true
         baseRoll = Float.NaN
         if (useSensors) {
@@ -330,7 +330,7 @@ class VideoEnvView(context: Context, videoAsset: String) : GLSurfaceView(context
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         sensors.unregisterListener(this)
         renderer.playing = false
-        queueEvent { renderer.setPlaying(false) }
+        queueEvent { renderer.applyPlaying(false) }
         onPause()
     }
 
