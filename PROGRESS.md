@@ -10,7 +10,8 @@ Status is only marked **Done** after it builds on GitHub Actions; items marked *
 | Gyroscope parallax (camera tilts with the phone) | Needs phone test | Game rotation vector sensor, accelerometer fallback |
 | Touch shockwave through the environment | Needs phone test | Every tap on the home screen |
 | Charging surge (shader glow + burst when the charger is plugged in) | Needs phone test | |
-| Graphics modes: Extreme (100% res, 60 fps), High (75%, 60), Balanced (50%, 30), Battery saver (33%, 20) | Needs phone test | Default Balanced; rendering stops when the launcher is hidden |
+| Graphics modes: Cinematic High (video, 60 fps), Cinematic Balanced (video, 30 fps, default), Battery saver (video, 24 fps, no gyro), Real-time 3D (live ray-marching, heavy) | Needs phone test | Rendering and video stop when the launcher is hidden |
+| Cinematic video engine: the Reactor Core scene pre-rendered at full quality as a seamless 12-second loop (720 x 1600, H.264), played by the hardware decoder; a light shader adds live parallax, touch shockwave, charging glow and universe recolouring | Needs phone test | Fix for the lag reported on the Moto G64 in build 5 |
 | Holographic HUD: clock with glow and scan beam, 60-tick seconds track, date, status line, battery gauge | Needs phone test | Tap clock = alarms, date = calendar, gauge = battery usage |
 | 3D orbit of up to 8 favourite apps around the reactor (depth scaling, drag to spin with momentum, tap to open, long-press menu) | Needs phone test | |
 | Command dock with 5 slots | Needs phone test | Long-press any app, "Add to dock" |
@@ -28,6 +29,8 @@ Status is only marked **Done** after it builds on GitHub Actions; items marked *
 - Jarvis assistant, schedules, accessibility pass, backup and restore
 
 ## Technical limits found
+
+- Build 5 lagged on the Moto G64: live ray-marching of the full machine is too heavy for its mid-range graphics chip, and the busy GPU also slowed the touch layer. Fix: the scene is pre-rendered into a looping video (decoded by dedicated hardware), live effects are a single cheap shader pass, and icon glows are cached instead of rebuilt every frame. Real-time mode is kept as an option for stronger phones.
 
 - A normal launcher cannot animate inside another app's window (system permission only), so launch effects play on the launcher layer while the app opens.
 - Google's Android SDK servers are blocked from the build sandbox, so Android builds run on GitHub Actions; shaders are checked locally in WebGL2.

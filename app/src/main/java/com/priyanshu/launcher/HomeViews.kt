@@ -2,6 +2,7 @@ package com.priyanshu.launcher
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
@@ -40,20 +41,35 @@ class HomeItem(val app: AppEntry, val icon: Drawable)
 /** Draws an app icon inside a holographic glass emitter: glow, glass disc, rotating segmented ring, specular arc. */
 object HoloIcon {
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val rect = RectF()
+    private val dst = RectF()
+    private const val CACHE_R = 96f
+    private val cache = HashMap<Int, Bitmap>()
+
+    /** Glow and glass disc are drawn once per accent colour into a bitmap, then reused every frame. */
+    private fun base(accent: Int): Bitmap = cache.getOrPut(accent) {
+        val size = (CACHE_R * 1.7f * 2f).toInt()
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val cx = size / 2f
+        val r = CACHE_R
+        val q = Paint(Paint.ANTI_ALIAS_FLAG)
+        q.shader = RadialGradient(cx, cx, r * 1.7f, intArrayOf(withAlpha(accent, 0.38f), Color.TRANSPARENT), null, Shader.TileMode.CLAMP)
+        c.drawCircle(cx, cx, r * 1.7f, q)
+        q.shader = RadialGradient(cx - r * 0.3f, cx - r * 0.45f, r * 1.5f,
+            intArrayOf(withAlpha(Color.WHITE, 0.20f), withAlpha(accent, 0.14f), withAlpha(Color.BLACK, 0.70f)),
+            floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP)
+        c.drawCircle(cx, cx, r, q)
+        bmp
+    }
 
     fun draw(c: Canvas, icon: Drawable?, cx: Float, cy: Float, r: Float, accent: Int, alpha: Float, glow: Float, time: Float) {
         if (r <= 1f) return
-        p.style = Paint.Style.FILL
-        p.shader = RadialGradient(cx, cy, r * 1.7f, intArrayOf(withAlpha(accent, 0.38f * alpha * glow), Color.TRANSPARENT), null, Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, r * 1.7f, p)
-        p.shader = RadialGradient(
-            cx - r * 0.3f, cy - r * 0.45f, r * 1.5f,
-            intArrayOf(withAlpha(Color.WHITE, 0.20f * alpha), withAlpha(accent, 0.14f * alpha), withAlpha(Color.BLACK, 0.70f * alpha)),
-            floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP
-        )
-        c.drawCircle(cx, cy, r, p)
-        p.shader = null
+        val e = r * 1.7f
+        dst.set(cx - e, cy - e, cx + e, cy + e)
+        bp.alpha = (255 * alpha * (0.6f + 0.4f * glow)).toInt().coerceIn(0, 255)
+        c.drawBitmap(base(accent), null, dst, bp)
 
         p.style = Paint.Style.STROKE
         p.strokeCap = Paint.Cap.ROUND
@@ -226,7 +242,7 @@ class OrbitView(context: Context) : View(context) {
                 canvas.drawText(label, px[i], py[i] + r * 1.35f + textPaint.textSize, textPaint)
             }
         }
-        if (running) postInvalidateDelayed(16)
+        if (running) postInvalidateDelayed(if (dragging || abs(vel) > 0.05f || pressed >= 0) 16L else 33L)
     }
 
     private fun hit(x: Float, y: Float): Int {
