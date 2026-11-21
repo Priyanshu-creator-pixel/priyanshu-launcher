@@ -21,6 +21,23 @@ Status is only marked **Done** after it builds on GitHub Actions; items marked *
 | Switch between 3D environment and the earlier 2D effects | Needs phone test | |
 | Preserved: app list, search, A to Z bar, swipe up/down, app info, uninstall, Classic wallpaper theme, animations toggle | Needs phone test | |
 
+## Milestone 2 — Characters (this build)
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Character Library screen (long-press empty home space → Character library): create, edit, rename, set universe, activate, delete | Built, needs phone test | |
+| Import character image (PNG, JPG, WebP) through the Android Photo Picker (Android 13+) or file picker | Built, needs phone test | Copied into the app's private storage, separate from built-in assets; never uploaded |
+| Import wallpaper and show it on the home screen instead of the 3D scene | Built, needs phone test | |
+| Import GLB / glTF 3D model | Stored only | 3D model display is NOT built yet; the library says so |
+| Character on the home screen: transparent cutouts stand in front of the reactor, rectangular pictures float as holographic portraits | Built, needs phone test | Automatic cutout detection |
+| 2D character animation: depth parallax with the gyroscope, breathing scale, aura glow, ground light, bottom-up reveal scan | Built, needs phone test | A still image is not presented as an animated 3D model |
+| Effects: energy aura, lightning storm, spinning portals, timeline distortion (slice glitches + rings), floating particles | Built, needs phone test | |
+| Launcher glow colour taken automatically from the character art (or picked) and applied to HUD, orbit, dock, drawer and 3D scene | Built, needs phone test | |
+| Character icons: any app can use the active character's art (zoom, position, holographic / metallic / energy ring); restore original icon | Built, needs phone test | Used in orbit, dock and app list |
+| Character size and height controls | Built, needs phone test | |
+
+Not built yet for characters: 3D model rendering and model animations, folder icons (folders do not exist yet), widgets, background removal for non-transparent pictures.
+
 ## Not built yet (honest list)
 
 - Themed icon engine (metallic, glass, crystal, mechanical, cosmic, alien styles); icons are the apps' real icons inside holographic emitters
@@ -37,4 +54,4 @@ Status is only marked **Done** after it builds on GitHub Actions; items marked *
 
 ## Next task
 
-Phone test of Milestone 1 on the Moto G64 (frame rate in Balanced and High), then Milestone 2: themed icon engine.
+Phone test of the cinematic video fix and the character system on the Moto G64, then 3D model display (GLB) for characters.
