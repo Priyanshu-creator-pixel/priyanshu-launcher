@@ -31,6 +31,11 @@ android {
         }
     }
 
+    // the background video is read straight from the APK, so it must stay uncompressed
+    androidResources {
+        noCompress += "mp4"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

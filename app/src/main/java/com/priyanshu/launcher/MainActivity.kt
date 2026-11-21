@@ -88,6 +88,7 @@ class MainActivity : Activity() {
 
     private lateinit var bgLayer: FrameLayout
     private var env: EnvView? = null
+    private var video: VideoEnvView? = null
     private var fx: FxView? = null
     private lateinit var homeLayer: FrameLayout
     private lateinit var hud: HudView
@@ -130,6 +131,7 @@ class MainActivity : Activity() {
             hud.charging = charging
             env?.renderer?.battery = frac
             env?.renderer?.charging = if (charging) 1f else 0f
+            video?.renderer?.charging = if (charging) 1f else 0f
             if (charging && !wasCharging && resumed && motionOn) {
                 // charging surge effect from the bottom of the screen
                 launchFx.burst(homeLayer.width / 2f, homeLayer.height.toFloat() - dp(60), dp(70).toFloat(), Color.rgb(90, 255, 150))
@@ -202,6 +204,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         try { unregisterReceiver(packageReceiver) } catch (_: Exception) { }
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) { }
+        video?.release()
         super.onDestroy()
     }
 
@@ -221,7 +224,7 @@ class MainActivity : Activity() {
             touchOnLetters = letterBar.visibility == View.VISIBLE &&
                     letterBar.getGlobalVisibleRect(r) &&
                     r.contains(ev.rawX.toInt(), ev.rawY.toInt())
-            if (!drawerOpen && motionOn) env?.ripple(ev.x, ev.y)
+            if (!drawerOpen && motionOn) { env?.ripple(ev.x, ev.y); video?.ripple(ev.x, ev.y) }
         }
         if (!drawerOpen && !touchOnLetters) gestures.onTouchEvent(ev)
         return super.dispatchTouchEvent(ev)
@@ -229,6 +232,7 @@ class MainActivity : Activity() {
 
     private fun startRendering() {
         env?.start()
+        video?.start()
         fx?.running = motionOn
         hud.running = true
         orbit.running = true
@@ -237,6 +241,7 @@ class MainActivity : Activity() {
 
     private fun stopRendering() {
         env?.stop()
+        video?.stop()
         fx?.running = false
         hud.running = false
         orbit.running = false
@@ -404,11 +409,23 @@ class MainActivity : Activity() {
     /** 3D GPU environment, the 2D animated effect, or the phone wallpaper (Classic theme). */
     private fun setBackground() {
         env?.stop()
+        video?.stop()
+        video?.release()
         bgLayer.removeAllViews()
         env = null
+        video = null
         fx = null
         if (look.wallpaper) return
-        if (use3d) {
+        if (use3d && gfx.video) {
+            val v = VideoEnvView(this, "video/reactor_core.mp4")
+            v.fps = gfx.fps
+            v.useSensors = gfx.sensors
+            v.renderer.renderScale = gfx.scale
+            v.renderer.accent = accentFloats(look.accent)
+            bgLayer.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            video = v
+            if (resumed) v.start()
+        } else if (use3d) {
             val v = EnvView(this)
             v.mode = gfx
             v.renderer.accent = accentFloats(look.accent)
@@ -459,7 +476,7 @@ class MainActivity : Activity() {
     private fun statusLine(): String {
         val engine = when {
             look.wallpaper -> "WALLPAPER"
-            use3d -> "3D " + gfx.label.uppercase()
+            use3d -> gfx.label.uppercase()
             else -> "2D EFFECTS"
         }
         return "${look.name.uppercase()} · $engine"
@@ -523,7 +540,7 @@ class MainActivity : Activity() {
     private fun showGraphicsPicker() {
         val modes = GraphicsMode.values()
         val names = modes.map {
-            val detail = "${(it.scale * 100).toInt()}% resolution, ${it.fps} fps"
+            val detail = if (it.video) "smooth video engine, ${it.fps} fps" else "live GPU ray-marching, may lag on mid-range phones"
             if (it == gfx) "${it.label} ($detail) ✓" else "${it.label} ($detail)"
         }.toTypedArray()
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -531,7 +548,8 @@ class MainActivity : Activity() {
             .setItems(names) { _, which ->
                 gfx = modes[which]
                 prefs.edit().putInt("gfx", gfx.ordinal).apply()
-                env?.mode = gfx
+                setBackground()
+                if (resumed) startRendering()
                 hud.status = statusLine()
                 Toast.makeText(this, "Graphics: ${gfx.label}", Toast.LENGTH_SHORT).show()
             }
@@ -741,6 +759,7 @@ class MainActivity : Activity() {
             reveal.interpolator = DecelerateInterpolator(1.8f)
             reveal.start()
             env?.ripple(drawerView.width / 2f, drawerView.height.toFloat())
+            video?.ripple(drawerView.width / 2f, drawerView.height.toFloat())
         }
 
         if (letter != null) {

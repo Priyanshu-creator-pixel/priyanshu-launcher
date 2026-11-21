@@ -10,12 +10,16 @@ import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
-/** Render cost presets. scale = fraction of screen resolution, quality = shader detail level. */
-enum class GraphicsMode(val label: String, val scale: Float, val fps: Int, val quality: Float) {
-    EXTREME("Extreme", 1.0f, 60, 3f),
-    HIGH("High", 0.75f, 60, 2f),
-    BALANCED("Balanced", 0.5f, 30, 1f),
-    SAVER("Battery saver", 0.33f, 20, 0f)
+/**
+ * Render presets. Cinematic modes play the pre-rendered 3D loop through the hardware video decoder
+ * (smooth on mid-range phones); EXTREME ray-marches the scene live on the GPU (heavy).
+ * scale = fraction of screen resolution, quality = live shader detail level.
+ */
+enum class GraphicsMode(val label: String, val video: Boolean, val scale: Float, val fps: Int, val quality: Float, val sensors: Boolean) {
+    EXTREME("Real-time 3D (heavy)", false, 0.4f, 30, 1f, true),
+    HIGH("Cinematic High", true, 1.0f, 60, 0f, true),
+    BALANCED("Cinematic Balanced", true, 0.75f, 30, 0f, true),
+    SAVER("Battery saver", true, 0.5f, 24, 0f, false)
 }
 
 /**
