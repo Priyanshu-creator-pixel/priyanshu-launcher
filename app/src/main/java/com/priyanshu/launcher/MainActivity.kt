@@ -839,7 +839,6 @@ class MainActivity : Activity() {
                         }
                     }
                     "Remove from dock" -> { dockList.remove(app.key); saveKeys("dock", dockList) }
-                    else -> if (options[which].startsWith("Character icon")) hero?.let { showIconCrop(app, it) }
                     "Restore original icon" -> {
                         CharacterStore.clearIcon(this, app.key)
                         iconCache.remove(app.key); charVersion = CharacterStore.version(this)
@@ -847,6 +846,7 @@ class MainActivity : Activity() {
                     }
                     "App info" -> startSafely(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${app.pkg}")))
                     "Uninstall" -> startSafely(Intent(Intent.ACTION_DELETE, Uri.parse("package:${app.pkg}")))
+                    else -> if (options[which].startsWith("Character icon")) hero?.let { showIconCrop(app, it) }
                 }
             }
             .show()
