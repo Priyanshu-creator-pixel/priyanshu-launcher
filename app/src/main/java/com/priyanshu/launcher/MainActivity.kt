@@ -13,6 +13,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -48,6 +49,8 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.graphics.Bitmap
 import android.widget.SectionIndexer
 import android.widget.TextView
 import android.widget.Toast
@@ -101,6 +104,10 @@ class MainActivity : Activity() {
     private lateinit var allList: ListView
     private lateinit var adapter: AppAdapter
     private lateinit var launchFx: LaunchFx
+    private lateinit var characterLayer: CharacterLayer
+    private var charProfile: CharacterProfile? = null
+    private var charAccent: Int? = null
+    private var charVersion = -1L
     private lateinit var gestures: GestureDetector
 
     private var drawerOpen = false
@@ -144,6 +151,9 @@ class MainActivity : Activity() {
 
     private fun dur(ms: Long): Long = if (motionOn) ms else 0L
 
+    /** Glow colour: the active character's colour when one is set, otherwise the universe accent. */
+    private fun accent(): Int = charAccent ?: look.accent
+
     // ================= lifecycle =================
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -179,6 +189,7 @@ class MainActivity : Activity() {
         }
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
 
+        loadCharacter(animate = false)
         setBackground()
         styleUi()
         refresh()
@@ -187,10 +198,15 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        if (CharacterStore.version(this) != charVersion) {
+            loadCharacter(animate = true)
+            setBackground()
+            styleUi()
+        }
         startRendering()
         refresh()
         returnPoint?.let { p ->
-            if (motionOn) launchFx.implode(p[0], p[1], p[2], look.accent)
+            if (motionOn) launchFx.implode(p[0], p[1], p[2], accent())
             returnPoint = null
         }
     }
@@ -234,6 +250,7 @@ class MainActivity : Activity() {
         env?.start()
         video?.start()
         fx?.running = motionOn
+        characterLayer.running = true
         hud.running = true
         orbit.running = true
         dock.running = motionOn
@@ -243,6 +260,7 @@ class MainActivity : Activity() {
         env?.stop()
         video?.stop()
         fx?.running = false
+        characterLayer.running = false
         hud.running = false
         orbit.running = false
         dock.running = false
@@ -260,6 +278,8 @@ class MainActivity : Activity() {
         val root = FrameLayout(this)
         bgLayer = FrameLayout(this)
         root.addView(bgLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        characterLayer = CharacterLayer(this)
+        root.addView(characterLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         val content = FrameLayout(this).apply { clipChildren = false }
         content.setOnApplyWindowInsetsListener { v, insets ->
@@ -416,19 +436,21 @@ class MainActivity : Activity() {
         video = null
         fx = null
         if (look.wallpaper) return
+        // a character wallpaper replaces the 3D scene (saves the GPU for the character effects)
+        if (charProfile?.useWallpaper == true && characterLayer.hasWallpaper()) return
         if (use3d && gfx.video) {
             val v = VideoEnvView(this, "video/reactor_core.mp4")
             v.fps = gfx.fps
             v.useSensors = gfx.sensors
             v.renderer.renderScale = gfx.scale
-            v.renderer.accent = accentFloats(look.accent)
+            v.renderer.accent = accentFloats(accent())
             bgLayer.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             video = v
             if (resumed) v.start()
         } else if (use3d) {
             val v = EnvView(this)
             v.mode = gfx
-            v.renderer.accent = accentFloats(look.accent)
+            v.renderer.accent = accentFloats(accent())
             v.renderer.day = Calendar.getInstance().let { (it.get(Calendar.HOUR_OF_DAY) + it.get(Calendar.MINUTE) / 60f) / 24f }
             bgLayer.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             env = v
@@ -443,16 +465,20 @@ class MainActivity : Activity() {
     private fun font(style: Int = Typeface.NORMAL): Typeface = Typeface.create(look.font, style)
 
     private fun styleUi() {
-        hud.accent = look.accent
+        characterLayer.accent = accent()
+        characterLayer.motion = motionOn
+        env?.renderer?.accent = accentFloats(accent())
+        video?.renderer?.accent = accentFloats(accent())
+        hud.accent = accent()
         hud.accent2 = look.accent2
         hud.textColor = look.text
         hud.face = font()
         hud.status = statusLine()
-        orbit.accent = look.accent
+        orbit.accent = accent()
         orbit.textColor = look.text
         orbit.face = font()
         orbit.motion = motionOn
-        dock.accent = look.accent
+        dock.accent = accent()
         hint.setTextColor(withAlpha(look.text, 0.55f))
         hint.typeface = font()
         hint.setShadowLayer(8f, 0f, 0f, Color.BLACK)
@@ -467,7 +493,7 @@ class MainActivity : Activity() {
             intArrayOf(withAlpha(base, 0.82f), withAlpha(base, 0.96f)))
         searchBox.setTextColor(look.text)
         searchBox.setHintTextColor(withAlpha(look.text, 0.5f))
-        searchBox.backgroundTintList = ColorStateList.valueOf(look.accent)
+        searchBox.backgroundTintList = ColorStateList.valueOf(accent())
         searchBox.typeface = font()
         allList.adapter = adapter
         renderHome()
@@ -479,7 +505,8 @@ class MainActivity : Activity() {
             use3d -> gfx.label.uppercase()
             else -> "2D EFFECTS"
         }
-        return "${look.name.uppercase()} · $engine"
+        val who = charProfile?.let { " · " + it.name.uppercase() } ?: ""
+        return "${look.name.uppercase()}$who · $engine"
     }
 
     private fun applyTheme(index: Int) {
@@ -487,7 +514,7 @@ class MainActivity : Activity() {
         prefs.edit().putInt("theme", index).apply()
         setBackground()
         styleUi()
-        if (motionOn) launchFx.burst(homeLayer.width / 2f, homeLayer.height * 0.5f, dp(90).toFloat(), look.accent)
+        if (motionOn) launchFx.burst(homeLayer.width / 2f, homeLayer.height * 0.5f, dp(90).toFloat(), accent())
     }
 
     private fun showThemePicker() {
@@ -558,6 +585,7 @@ class MainActivity : Activity() {
 
     private fun showHomeMenu() {
         val options = arrayOf(
+            "Character library",
             "Universes (themes)",
             "3D graphics quality: ${gfx.label}",
             if (use3d) "Switch to 2D effects (lighter)" else "Switch to 3D environment",
@@ -568,22 +596,23 @@ class MainActivity : Activity() {
             .setTitle("MULTIVERSE X")
             .setItems(options) { _, which ->
                 when (which) {
-                    0 -> showThemePicker()
-                    1 -> showGraphicsPicker()
-                    2 -> {
+                    0 -> startSafely(Intent(this, CharacterLibraryActivity::class.java))
+                    1 -> showThemePicker()
+                    2 -> showGraphicsPicker()
+                    3 -> {
                         use3d = !use3d
                         prefs.edit().putBoolean("use3d", use3d).apply()
                         setBackground()
                         if (resumed) startRendering()
                         hud.status = statusLine()
                     }
-                    3 -> {
+                    4 -> {
                         motionOn = !motionOn
                         prefs.edit().putBoolean("motion", motionOn).apply()
                         styleUi()
                         if (resumed) startRendering()
                     }
-                    4 -> startSafely(Intent.createChooser(Intent(Intent.ACTION_SET_WALLPAPER), "Choose wallpaper"))
+                    5 -> startSafely(Intent.createChooser(Intent(Intent.ACTION_SET_WALLPAPER), "Choose wallpaper"))
                 }
             }
             .show()
@@ -595,7 +624,7 @@ class MainActivity : Activity() {
             val dist = abs(i - idx)
             val scale = when (dist) { 0 -> 2.3f; 1 -> 1.6f; 2 -> 1.25f; else -> 1f }
             val shift = when (dist) { 0 -> -dp(34); 1 -> -dp(20); 2 -> -dp(8); else -> 0 }
-            tv.setTextColor(if (dist == 0) look.accent else withAlpha(look.text, if (dist <= 2) 0.9f else 0.55f))
+            tv.setTextColor(if (dist == 0) accent() else withAlpha(look.text, if (dist <= 2) 0.9f else 0.55f))
             tv.animate().scaleX(scale).scaleY(scale).translationX(shift.toFloat()).setDuration(dur(140)).start()
         }
     }
@@ -606,6 +635,85 @@ class MainActivity : Activity() {
             tv.setTextColor(withAlpha(look.text, 0.55f))
             tv.animate().scaleX(1f).scaleY(1f).translationX(0f).setDuration(dur(220)).start()
         }
+    }
+
+    // ================= characters =================
+
+    /** Loads the active character profile and its images into the home screen. */
+    private fun loadCharacter(animate: Boolean) {
+        charVersion = CharacterStore.version(this)
+        iconCache.clear()
+        val p = CharacterStore.active(this)
+        charProfile = p
+        if (p == null) {
+            characterLayer.setCharacter(null, true, false)
+            characterLayer.setWallpaper(null)
+            charAccent = null
+            return
+        }
+        val img = CharacterStore.loadBitmap(this, p, p.image, 1400)
+        val cut = img?.let { CharacterStore.isCutout(it) } ?: true
+        charAccent = when {
+            p.accent != 0 -> p.accent
+            img != null -> CharacterStore.autoAccent(img)
+            else -> null
+        }
+        characterLayer.motion = motionOn
+        characterLayer.effect = p.effect
+        characterLayer.size = p.size
+        characterLayer.lift = p.lift
+        characterLayer.accent = accent()
+        characterLayer.setCharacter(img, cut, animate)
+        characterLayer.setWallpaper(if (p.useWallpaper) CharacterStore.loadBitmap(this, p, p.wallpaper, 1800) else null)
+    }
+
+    /** Builds a circular app icon from the active character's artwork, with live preview. */
+    private fun showIconCrop(app: AppEntry, hero: CharacterProfile) {
+        val src = CharacterStore.loadBitmap(this, hero, hero.image, 900) ?: run {
+            Toast.makeText(this, "Could not read ${hero.name}'s image", Toast.LENGTH_SHORT).show(); return
+        }
+        var style = 0
+        val styleNames = arrayOf("Holographic ring", "Metallic ring", "Energy ring")
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(10), dp(20), 0); gravity = Gravity.CENTER_HORIZONTAL }
+        val preview = ImageView(this)
+        box.addView(preview, LinearLayout.LayoutParams(dp(140), dp(140)))
+        fun bar(label: String, max: Int, start: Int): SeekBar {
+            box.addView(TextView(this).apply { text = label; setTextColor(Color.WHITE); setPadding(0, dp(8), 0, 0) })
+            val sb = SeekBar(this).apply { this.max = max; progress = start }
+            box.addView(sb, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            return sb
+        }
+        val zoom = bar("Zoom", 200, 20)
+        val ox = bar("Left / right", 100, 50)
+        val oy = bar("Up / down", 100, 62)
+        val styleBtn = TextView(this).apply {
+            setTextColor(accent()); textSize = 15f; setPadding(0, dp(12), 0, dp(4))
+            text = "Ring: ${styleNames[style]}  (tap to change)"
+        }
+        box.addView(styleBtn)
+        fun render(size: Int): Bitmap = CharacterIcon.render(src, size, 1f + zoom.progress / 100f,
+            (ox.progress - 50) / 100f, (oy.progress - 50) / 100f, accent(), style)
+        fun update() = preview.setImageBitmap(render(dp(140)))
+        styleBtn.setOnClickListener { style = (style + 1) % 3; styleBtn.text = "Ring: ${styleNames[style]}  (tap to change)"; update() }
+        val listener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) = update()
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {}
+        }
+        zoom.setOnSeekBarChangeListener(listener); ox.setOnSeekBarChangeListener(listener); oy.setOnSeekBarChangeListener(listener)
+        update()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("${app.label} icon")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Use this icon") { _, _ ->
+                CharacterStore.saveIcon(this, app.key, render(256))
+                iconCache.remove(app.key)
+                charVersion = CharacterStore.version(this)
+                renderHome()
+                allList.invalidateViews()
+                Toast.makeText(this, "${app.label} now uses ${hero.name} artwork", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null).show()
     }
 
     // ================= apps =================
@@ -622,6 +730,7 @@ class MainActivity : Activity() {
     }
 
     private fun icon(app: AppEntry): Drawable = iconCache.getOrPut(app.key) {
+        CharacterStore.customIcon(this, app.key)?.let { return@getOrPut BitmapDrawable(resources, it) }
         try { packageManager.getActivityIcon(app.component()) } catch (_: Exception) { packageManager.defaultActivityIcon }
     }
 
@@ -651,7 +760,7 @@ class MainActivity : Activity() {
         try {
             startActivity(i, opts)
             if (motionOn && size > 0f) {
-                launchFx.burst(screenX, screenY, size, look.accent)
+                launchFx.burst(screenX, screenY, size, accent())
                 returnPoint = floatArrayOf(screenX, screenY, size)
             }
         } catch (_: Exception) {
@@ -693,6 +802,10 @@ class MainActivity : Activity() {
         options += if (inOrbit) "Remove from orbit" else "Add to orbit"
         if (inOrbit) { options += "Move earlier in orbit"; options += "Move later in orbit" }
         options += if (inDock) "Remove from dock" else "Add to dock"
+        val hero = charProfile
+        if (hero != null && hero.image.isNotBlank()) options += "Character icon from ${hero.name}…"
+        val hasCustom = CharacterStore.customIcon(this, app.key) != null
+        if (hasCustom) options += "Restore original icon"
         options += "App info"
         options += "Uninstall"
 
@@ -726,6 +839,12 @@ class MainActivity : Activity() {
                         }
                     }
                     "Remove from dock" -> { dockList.remove(app.key); saveKeys("dock", dockList) }
+                    else -> if (options[which].startsWith("Character icon")) hero?.let { showIconCrop(app, it) }
+                    "Restore original icon" -> {
+                        CharacterStore.clearIcon(this, app.key)
+                        iconCache.remove(app.key); charVersion = CharacterStore.version(this)
+                        renderHome(); allList.invalidateViews()
+                    }
                     "App info" -> startSafely(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${app.pkg}")))
                     "Uninstall" -> startSafely(Intent(Intent.ACTION_DELETE, Uri.parse("package:${app.pkg}")))
                 }
@@ -875,7 +994,7 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(10), dp(10), dp(10), dp(10))
-                    background = RippleDrawable(ColorStateList.valueOf(withAlpha(look.accent, 0.30f)), null,
+                    background = RippleDrawable(ColorStateList.valueOf(withAlpha(accent(), 0.30f)), null,
                         GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.WHITE) })
                 }
                 iv = ImageView(this@MainActivity)
