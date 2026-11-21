@@ -11,8 +11,8 @@ android {
         applicationId = "com.priyanshu.launcher"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "3.0-multiverse-x"
     }
 
     // Fixed key so every new build installs over the old one (your favourites are kept)
