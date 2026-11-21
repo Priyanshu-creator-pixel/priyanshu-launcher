@@ -1,5 +1,8 @@
 package com.priyanshu.launcher
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
@@ -8,9 +11,17 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,9 +32,19 @@ import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewAnimationUtils
 import android.view.ViewGroup
+import android.view.animation.AlphaAnimation
+import android.view.animation.Animation
+import android.view.animation.AnimationSet
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.LayoutAnimationController
+import android.view.animation.LinearInterpolator
+import android.view.animation.OvershootInterpolator
+import android.view.animation.TranslateAnimation
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
@@ -32,11 +53,15 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.SectionIndexer
 import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.sin
 
 /** One app that can be opened from the launcher. */
 data class AppEntry(val label: String, val pkg: String, val cls: String) {
@@ -55,14 +80,21 @@ class MainActivity : Activity() {
     // ---------- settings you can change ----------
     private val maxFavourites = 8
     private val favouriteTextSp = 30f
-    private val showFavouriteIcons = true
     // ----------------------------------------------
 
     private lateinit var prefs: SharedPreferences
     private var apps: List<AppEntry> = emptyList()
     private val iconCache = HashMap<String, Drawable>()
 
+    private lateinit var look: LauncherTheme
+    private var motionOn = true
+    private var showIcons = true
+
+    private lateinit var bgLayer: FrameLayout
+    private var fx: FxView? = null
     private lateinit var homeView: LinearLayout
+    private lateinit var clock: TextClock
+    private lateinit var date: TextClock
     private lateinit var favList: LinearLayout
     private lateinit var hint: TextView
     private lateinit var letterBar: LinearLayout
@@ -72,22 +104,37 @@ class MainActivity : Activity() {
     private lateinit var adapter: AppAdapter
     private lateinit var gestures: GestureDetector
 
+    private var drawerOpen = false
+    private var touchOnLetters = false
+    private var activeLetter = -1
+    private var clockAnim: ValueAnimator? = null
+    private var clockShader: LinearGradient? = null
+    private var clockShaderWidth = 0
+    private val shaderMatrix = Matrix()
+
     private val letters = listOf("#") + ('A'..'Z').map { it.toString() }
 
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            refresh()
+            iconCache.clear()
+            refresh(animate = false)
         }
     }
 
     private fun dp(v: Int): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
+    /** Animation length, or 0 when motion is switched off. */
+    private fun dur(ms: Long): Long = if (motionOn) ms else 0L
+
     // ================= lifecycle =================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("launcher", Context.MODE_PRIVATE)
+        motionOn = prefs.getBoolean("motion", true)
+        showIcons = prefs.getBoolean("icons", true)
+        look = Themes.all[prefs.getInt("theme", 1).coerceIn(0, Themes.all.size - 1)]
 
         @Suppress("DEPRECATION")
         run {
@@ -112,12 +159,23 @@ class MainActivity : Activity() {
         } else {
             registerReceiver(packageReceiver, filter)
         }
-        refresh()
+
+        setBackgroundEffect(animated = false, cx = 0, cy = 0)
+        styleUi()
+        refresh(animate = true)
     }
 
     override fun onResume() {
         super.onResume()
-        refresh()
+        fx?.running = motionOn
+        startClockAnimation()
+        if (!drawerOpen) refresh(animate = true) else refresh(animate = false)
+    }
+
+    override fun onPause() {
+        fx?.running = false
+        clockAnim?.cancel()
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -133,113 +191,130 @@ class MainActivity : Activity() {
 
     @Deprecated("Back is handled manually so the launcher never closes itself")
     override fun onBackPressed() {
-        if (drawerView.visibility == View.VISIBLE) closeDrawer()
-        // On the home view, Back does nothing (a launcher should not exit).
+        if (drawerOpen) closeDrawer()
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (homeView.visibility == View.VISIBLE) gestures.onTouchEvent(ev)
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            val r = Rect()
+            touchOnLetters = letterBar.visibility == View.VISIBLE &&
+                    letterBar.getGlobalVisibleRect(r) &&
+                    r.contains(ev.rawX.toInt(), ev.rawY.toInt())
+        }
+        if (!drawerOpen && !touchOnLetters) gestures.onTouchEvent(ev)
         return super.dispatchTouchEvent(ev)
     }
 
-    private fun refresh() {
+    private fun refresh(animate: Boolean) {
         loadApps()
-        renderFavourites()
+        renderFavourites(animate)
         if (::adapter.isInitialized) adapter.filter(searchBox.text.toString())
     }
 
     // ================= UI =================
 
-    private fun styledText(size: Float, alpha: Float = 1f): TextView = TextView(this).apply {
-        setTextColor(Color.WHITE)
-        textSize = size
-        this.alpha = alpha
-        setShadowLayer(8f, 0f, 2f, Color.argb(170, 0, 0, 0))
-    }
-
     private fun buildUi(): View {
         val root = FrameLayout(this)
-        root.setOnApplyWindowInsetsListener { v, insets ->
+
+        bgLayer = FrameLayout(this)
+        root.addView(bgLayer, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        val content = FrameLayout(this).apply { clipChildren = false }
+        content.setOnApplyWindowInsetsListener { v, insets ->
             @Suppress("DEPRECATION")
             v.setPadding(0, insets.systemWindowInsetTop, 0, insets.systemWindowInsetBottom)
             insets
         }
+        root.addView(content, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // ---------- home view ----------
         homeView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(28), dp(24), dp(48), dp(24))
+            setPadding(dp(28), dp(24), dp(56), dp(24))
+            isLongClickable = true
+            setOnLongClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                showHomeMenu(); true
+            }
         }
 
-        val clock = TextClock(this).apply {
+        clock = TextClock(this).apply {
             format12Hour = "h:mm"
             format24Hour = "HH:mm"
-            setTextColor(Color.WHITE)
-            textSize = 60f
-            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-            setShadowLayer(8f, 0f, 2f, Color.argb(170, 0, 0, 0))
-            setOnClickListener { openAlarms() }
+            textSize = 68f
+            setOnClickListener { pulse(this); openAlarms() }
         }
-        val date = TextClock(this).apply {
+        date = TextClock(this).apply {
             format12Hour = "EEEE, d MMMM"
             format24Hour = "EEEE, d MMMM"
-            setTextColor(Color.WHITE)
             textSize = 16f
-            alpha = 0.85f
-            setShadowLayer(8f, 0f, 2f, Color.argb(170, 0, 0, 0))
-            setOnClickListener { openCalendar() }
+            letterSpacing = 0.08f
+            setOnClickListener { pulse(this); openCalendar() }
         }
         homeView.addView(clock)
         homeView.addView(date)
-
         homeView.addView(View(this), LinearLayout.LayoutParams(0, 0, 1f))
 
         favList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         homeView.addView(favList)
-
         homeView.addView(View(this), LinearLayout.LayoutParams(0, 0, 0.35f))
 
-        hint = styledText(13f, 0.6f)
+        hint = TextView(this).apply { textSize = 12f }
         homeView.addView(hint)
 
-        root.addView(homeView, FrameLayout.LayoutParams(
+        content.addView(homeView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // ---------- A-Z bar on the right ----------
         letterBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
         }
         for (l in letters) {
-            val t = styledText(11f, 0.65f).apply {
+            val tv = TextView(this).apply {
                 text = l
+                textSize = 11f
                 gravity = Gravity.CENTER
+                typeface = Typeface.DEFAULT_BOLD
             }
-            letterBar.addView(t, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            letterBar.addView(tv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         letterBar.setOnTouchListener { v, e ->
-            if (e.action == MotionEvent.ACTION_UP) {
-                val idx = ((e.y / v.height) * letters.size).toInt().coerceIn(0, letters.size - 1)
-                openDrawer(focusSearch = false, letter = letters[idx])
+            val idx = ((e.y / v.height) * letters.size).toInt().coerceIn(0, letters.size - 1)
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    if (idx != activeLetter) {
+                        activeLetter = idx
+                        highlightLetter(idx)
+                        v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    resetLetters()
+                    activeLetter = -1
+                    openDrawer(focusSearch = false, letter = letters[idx])
+                }
+                MotionEvent.ACTION_CANCEL -> { resetLetters(); activeLetter = -1 }
             }
             true
         }
-        root.addView(letterBar, FrameLayout.LayoutParams(dp(30), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END).apply {
-            topMargin = dp(170)
+        content.addView(letterBar, FrameLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END).apply {
+            topMargin = dp(180)
             bottomMargin = dp(90)
         })
 
         // ---------- all-apps drawer ----------
         drawerView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(235, 12, 12, 14))
             setPadding(dp(16), dp(12), dp(16), 0)
             visibility = View.GONE
         }
         searchBox = EditText(this).apply {
             hint = "Search apps"
-            setHintTextColor(Color.argb(140, 255, 255, 255))
-            setTextColor(Color.WHITE)
             textSize = 18f
             isSingleLine = true
             imeOptions = EditorInfo.IME_ACTION_GO
@@ -261,17 +336,314 @@ class MainActivity : Activity() {
         allList = ListView(this).apply {
             divider = null
             isFastScrollEnabled = true
+            selector = ColorDrawable(Color.TRANSPARENT)
             this.adapter = this@MainActivity.adapter
-            setOnItemClickListener { _, _, pos, _ -> launch(this@MainActivity.adapter.getItem(pos)) }
-            setOnItemLongClickListener { _, _, pos, _ ->
+            setOnItemClickListener { _, view, pos, _ ->
+                pulse(view)
+                launch(this@MainActivity.adapter.getItem(pos))
+            }
+            setOnItemLongClickListener { _, view, pos, _ ->
+                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 showAppMenu(this@MainActivity.adapter.getItem(pos)); true
             }
         }
+        val rowAnim = AnimationSet(true).apply {
+            addAnimation(AlphaAnimation(0f, 1f))
+            addAnimation(TranslateAnimation(
+                Animation.RELATIVE_TO_SELF, 0f, Animation.RELATIVE_TO_SELF, 0f,
+                Animation.RELATIVE_TO_SELF, 0.8f, Animation.RELATIVE_TO_SELF, 0f))
+            duration = 280
+            interpolator = DecelerateInterpolator(1.6f)
+        }
+        allList.layoutAnimation = LayoutAnimationController(rowAnim, 0.07f)
         drawerView.addView(allList, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        root.addView(drawerView, FrameLayout.LayoutParams(
+        content.addView(drawerView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         return root
+    }
+
+    // ================= theme =================
+
+    private fun font(style: Int = Typeface.NORMAL): Typeface = Typeface.create(look.font, style)
+
+    /** Colours and fonts from the current theme applied to every part of the screen. */
+    private fun styleUi() {
+        val shadow = if (look.wallpaper) Color.argb(170, 0, 0, 0) else withAlpha(look.accent, 0.7f)
+
+        clock.typeface = font()
+        clock.setTextColor(look.text)
+        clockShader = null
+        clock.paint.shader = null
+        clock.setShadowLayer(18f, 0f, 0f, shadow)
+
+        date.typeface = font()
+        date.setTextColor(withAlpha(look.accent2, 0.9f))
+        date.setShadowLayer(8f, 0f, 2f, Color.argb(150, 0, 0, 0))
+
+        hint.setTextColor(withAlpha(look.text, 0.55f))
+        hint.typeface = font()
+
+        for (i in 0 until letterBar.childCount) {
+            val tv = letterBar.getChildAt(i) as TextView
+            tv.setTextColor(withAlpha(look.text, 0.6f))
+            tv.setShadowLayer(6f, 0f, 1f, Color.argb(160, 0, 0, 0))
+        }
+
+        val base = if (look.wallpaper) Color.rgb(12, 12, 14) else look.bg[0]
+        drawerView.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(withAlpha(base, 0.80f), withAlpha(base, 0.95f))
+        )
+        searchBox.setTextColor(look.text)
+        searchBox.setHintTextColor(withAlpha(look.text, 0.5f))
+        searchBox.backgroundTintList = ColorStateList.valueOf(look.accent)
+        searchBox.typeface = font()
+        searchBox.highlightColor = withAlpha(look.accent, 0.4f)
+
+        allList.adapter = adapter   // rebuild rows with the new colours
+        renderFavourites(animate = false)
+        startClockAnimation()
+    }
+
+    /** Shimmering gradient + breathing glow on the clock. */
+    private fun startClockAnimation() {
+        clockAnim?.cancel()
+        if (!::clock.isInitialized) return
+        val glowColour = if (look.wallpaper) Color.argb(170, 0, 0, 0) else withAlpha(look.accent, 0.75f)
+        val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 6000
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            addUpdateListener { a ->
+                val v = a.animatedValue as Float
+                val wdt = clock.width
+                if (wdt <= 0) return@addUpdateListener
+                if (clockShader == null || clockShaderWidth != wdt) {
+                    clockShaderWidth = wdt
+                    clockShader = LinearGradient(
+                        0f, 0f, wdt.toFloat(), 0f,
+                        intArrayOf(look.text, look.accent, look.accent2, look.text),
+                        null, Shader.TileMode.MIRROR
+                    )
+                }
+                shaderMatrix.setTranslate(v * wdt * 2f, 0f)
+                clockShader?.setLocalMatrix(shaderMatrix)
+                clock.paint.shader = clockShader
+                val glow = 14f + 14f * (0.5f + 0.5f * sin(v * 4f * PI.toFloat()))
+                clock.setShadowLayer(glow, 0f, 0f, glowColour)
+                clock.invalidate()
+            }
+        }
+        clockAnim = anim
+        if (motionOn) {
+            anim.start()
+        } else {
+            clock.post {
+                if (clock.width > 0) {
+                    clock.paint.shader = LinearGradient(
+                        0f, 0f, clock.width.toFloat(), 0f,
+                        look.text, look.accent, Shader.TileMode.CLAMP
+                    )
+                    clock.invalidate()
+                }
+            }
+        }
+    }
+
+    /** Swap the animated background. New theme spreads out in a circle from (cx, cy). */
+    private fun setBackgroundEffect(animated: Boolean, cx: Int, cy: Int) {
+        val old = fx
+        val next = FxView(this, look).apply { running = motionOn }
+        bgLayer.addView(next, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        fx = next
+
+        if (old == null) return
+        if (!animated || !motionOn) { bgLayer.removeView(old); return }
+
+        if (look.wallpaper) {
+            // fade the old effect away to reveal the wallpaper
+            old.animate().alpha(0f).setDuration(600).withEndAction { bgLayer.removeView(old) }.start()
+            return
+        }
+        next.visibility = View.INVISIBLE
+        next.post {
+            if (!next.isAttachedToWindow) { bgLayer.removeView(old); return@post }
+            val radius = hypot(bgLayer.width.toDouble(), bgLayer.height.toDouble()).toFloat()
+            val reveal = ViewAnimationUtils.createCircularReveal(next, cx, cy, 0f, radius)
+            reveal.duration = 750
+            reveal.interpolator = DecelerateInterpolator(1.5f)
+            reveal.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) { bgLayer.removeView(old) }
+            })
+            next.visibility = View.VISIBLE
+            reveal.start()
+        }
+    }
+
+    private fun applyTheme(index: Int) {
+        look = Themes.all[index]
+        prefs.edit().putInt("theme", index).apply()
+        val cx = bgLayer.width / 2
+        val cy = (bgLayer.height * 0.35f).toInt()
+        setBackgroundEffect(animated = true, cx = cx, cy = cy)
+        styleUi()
+        // little entrance for the clock
+        clock.scaleX = 0.85f; clock.scaleY = 0.85f; clock.alpha = 0f
+        clock.pivotX = 0f
+        clock.animate().scaleX(1f).scaleY(1f).alpha(1f)
+            .setDuration(dur(650)).setInterpolator(OvershootInterpolator(1.4f)).start()
+        renderFavourites(animate = true)
+    }
+
+    private fun showThemePicker() {
+        val scroll = ScrollView(this)
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+        }
+        scroll.addView(column)
+        var dialog: AlertDialog? = null
+        val current = Themes.all.indexOf(look)
+
+        Themes.all.forEachIndexed { i, th ->
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(20), dp(18), dp(20), dp(18))
+                val colours = if (th.wallpaper) intArrayOf(Color.rgb(40, 40, 46), Color.rgb(80, 80, 90)) else th.bg
+                background = GradientDrawable(GradientDrawable.Orientation.TL_BR, colours).apply {
+                    cornerRadius = dp(18).toFloat()
+                    if (i == current) setStroke(dp(3), th.accent) else setStroke(dp(1), withAlpha(th.accent, 0.35f))
+                }
+                foreground = RippleDrawable(
+                    ColorStateList.valueOf(withAlpha(th.accent, 0.35f)), null,
+                    GradientDrawable().apply { cornerRadius = dp(18).toFloat(); setColor(Color.WHITE) }
+                )
+                isClickable = true
+            }
+            val title = TextView(this).apply {
+                text = if (i == current) "${th.name}  ✓" else th.name
+                textSize = 22f
+                setTextColor(th.accent)
+                typeface = Typeface.create(th.font, Typeface.BOLD)
+                setShadowLayer(12f, 0f, 0f, withAlpha(th.accent, 0.6f))
+            }
+            val sub = TextView(this).apply {
+                text = th.tagline
+                textSize = 13f
+                setTextColor(withAlpha(th.text, 0.8f))
+                typeface = Typeface.create(th.font, Typeface.NORMAL)
+            }
+            val dots = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(10), 0, 0)
+            }
+            for (col in intArrayOf(th.accent, th.accent2, th.text)) {
+                val dot = View(this).apply {
+                    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(col) }
+                }
+                dots.addView(dot, LinearLayout.LayoutParams(dp(14), dp(14)).apply { marginEnd = dp(8) })
+            }
+            card.addView(title)
+            card.addView(sub)
+            card.addView(dots)
+            card.setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                dialog?.dismiss()
+                if (i != current) applyTheme(i)
+            }
+            column.addView(card, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
+
+            // cards slide in one after another
+            card.alpha = 0f
+            card.translationY = dp(40).toFloat()
+            card.animate().alpha(1f).translationY(0f)
+                .setStartDelay(dur(60L * i)).setDuration(dur(380))
+                .setInterpolator(DecelerateInterpolator(2f)).start()
+        }
+
+        dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Choose a theme")
+            .setView(scroll)
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showHomeMenu() {
+        val options = arrayOf(
+            "Themes",
+            if (showIcons) "Hide app icons on home" else "Show app icons on home",
+            if (motionOn) "Turn animations off (saves battery)" else "Turn animations on",
+            "Change wallpaper (Classic theme)"
+        )
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Priyanshu Launcher")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showThemePicker()
+                    1 -> {
+                        showIcons = !showIcons
+                        prefs.edit().putBoolean("icons", showIcons).apply()
+                        renderFavourites(animate = true)
+                    }
+                    2 -> {
+                        motionOn = !motionOn
+                        prefs.edit().putBoolean("motion", motionOn).apply()
+                        fx?.running = motionOn
+                        styleUi()
+                        Toast.makeText(this, if (motionOn) "Animations on" else "Animations off", Toast.LENGTH_SHORT).show()
+                    }
+                    3 -> startSafely(Intent.createChooser(Intent(Intent.ACTION_SET_WALLPAPER), "Choose wallpaper"))
+                }
+            }
+            .show()
+    }
+
+    // ================= small animations =================
+
+    /** Quick press-and-bounce on a view. */
+    private fun pulse(v: View) {
+        if (!motionOn) return
+        v.animate().scaleX(0.92f).scaleY(0.92f).setDuration(90).withEndAction {
+            v.animate().scaleX(1f).scaleY(1f).setDuration(260).setInterpolator(OvershootInterpolator(3f)).start()
+        }.start()
+    }
+
+    /** Makes a view shrink while pressed and spring back when released. */
+    private fun addPressEffect(v: View) {
+        v.setOnTouchListener { view, e ->
+            if (motionOn) when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> view.animate().scaleX(0.93f).scaleY(0.93f)
+                    .setDuration(110).setInterpolator(DecelerateInterpolator()).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> view.animate().scaleX(1f).scaleY(1f)
+                    .setDuration(320).setInterpolator(OvershootInterpolator(3f)).start()
+            }
+            false
+        }
+    }
+
+    private fun highlightLetter(idx: Int) {
+        for (i in 0 until letterBar.childCount) {
+            val tv = letterBar.getChildAt(i) as TextView
+            val dist = abs(i - idx)
+            val scale = when (dist) { 0 -> 2.3f; 1 -> 1.6f; 2 -> 1.25f; else -> 1f }
+            val shift = when (dist) { 0 -> -dp(34); 1 -> -dp(20); 2 -> -dp(8); else -> 0 }
+            tv.setTextColor(if (dist == 0) look.accent else withAlpha(look.text, if (dist <= 2) 0.9f else 0.6f))
+            if (dist == 0) tv.setShadowLayer(14f, 0f, 0f, look.accent) else tv.setShadowLayer(6f, 0f, 1f, Color.argb(160, 0, 0, 0))
+            tv.animate().scaleX(scale).scaleY(scale).translationX(shift.toFloat())
+                .setDuration(dur(140)).setInterpolator(DecelerateInterpolator()).start()
+        }
+    }
+
+    private fun resetLetters() {
+        for (i in 0 until letterBar.childCount) {
+            val tv = letterBar.getChildAt(i) as TextView
+            tv.setTextColor(withAlpha(look.text, 0.6f))
+            tv.setShadowLayer(6f, 0f, 1f, Color.argb(160, 0, 0, 0))
+            tv.animate().scaleX(1f).scaleY(1f).translationX(0f).setDuration(dur(220)).start()
+        }
     }
 
     // ================= apps =================
@@ -311,36 +683,54 @@ class MainActivity : Activity() {
 
     private fun saveFavourites(list: List<String>) {
         prefs.edit().putString("favs", list.joinToString("|")).apply()
-        renderFavourites()
+        renderFavourites(animate = true)
     }
 
-    private fun renderFavourites() {
+    private fun renderFavourites(animate: Boolean) {
+        if (!::favList.isInitialized || !::look.isInitialized) return
         favList.removeAllViews()
         val favs = favourites()
         var shown = 0
         for (key in favs) {
             val app = apps.find { it.key == key } ?: continue
-            val tv = styledText(favouriteTextSp).apply {
+            val tv = TextView(this).apply {
                 text = app.label
+                textSize = favouriteTextSp
+                setTextColor(look.text)
+                typeface = font()
+                setShadowLayer(10f, 0f, 2f, Color.argb(170, 0, 0, 0))
                 setPadding(0, dp(9), 0, dp(9))
                 isSingleLine = true
+                pivotX = 0f
                 setOnClickListener { launch(app) }
-                setOnLongClickListener { showAppMenu(app); true }
+                setOnLongClickListener {
+                    it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    showAppMenu(app); true
+                }
             }
-            if (showFavouriteIcons) {
+            addPressEffect(tv)
+            if (showIcons) {
                 val base = icon(app)
-                val d = base.constantState?.newDrawable()?.mutate() ?: base
-                d.setBounds(0, 0, dp(34), dp(34))
-                tv.setCompoundDrawables(d, null, null, null)
+                val dr = base.constantState?.newDrawable()?.mutate() ?: base
+                dr.setBounds(0, 0, dp(36), dp(36))
+                tv.setCompoundDrawables(dr, null, null, null)
                 tv.compoundDrawablePadding = dp(16)
             }
             favList.addView(tv)
+
+            if (animate && motionOn) {
+                tv.alpha = 0f
+                tv.translationX = -dp(60).toFloat()
+                tv.animate().alpha(1f).translationX(0f)
+                    .setStartDelay(55L * shown).setDuration(480)
+                    .setInterpolator(OvershootInterpolator(1.1f)).start()
+            }
             shown++
         }
         hint.text = if (shown == 0)
-            "Swipe up for all apps, then long-press an app to add it here"
+            "Swipe up for all apps, long-press an app to add it here\nLong-press empty space for themes"
         else
-            "Swipe up: search  •  Swipe down: notifications  •  A–Z: jump"
+            "Swipe up: search  •  Swipe down: notifications\nLong-press empty space: themes & settings"
     }
 
     private fun showAppMenu(app: AppEntry) {
@@ -390,34 +780,58 @@ class MainActivity : Activity() {
     // ================= drawer =================
 
     private fun openDrawer(focusSearch: Boolean, letter: String? = null) {
+        if (drawerOpen) return
+        drawerOpen = true
         searchBox.setText("")
         adapter.filter("")
-        homeView.visibility = View.GONE
-        letterBar.visibility = View.GONE
+
+        // home zooms back and fades
+        homeView.animate().alpha(0f).scaleX(0.92f).scaleY(0.92f).setDuration(dur(220))
+            .withEndAction { if (drawerOpen) homeView.visibility = View.INVISIBLE }.start()
+        letterBar.animate().alpha(0f).translationX(dp(30).toFloat()).setDuration(dur(200))
+            .withEndAction { if (drawerOpen) letterBar.visibility = View.GONE }.start()
+
+        // drawer slides up
         drawerView.visibility = View.VISIBLE
+        drawerView.alpha = 0f
+        drawerView.translationY = dp(140).toFloat()
+        drawerView.animate().alpha(1f).translationY(0f).setDuration(dur(340))
+            .setInterpolator(DecelerateInterpolator(2f)).start()
+
         if (letter != null) {
             val pos = adapter.items.indexOfFirst { letterOf(it.label) == letter }
             allList.setSelection(if (pos >= 0) pos else 0)
         } else {
             allList.setSelection(0)
         }
+        if (motionOn) allList.scheduleLayoutAnimation()
+
         if (focusSearch) {
             searchBox.requestFocus()
             searchBox.postDelayed({
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.showSoftInput(searchBox, InputMethodManager.SHOW_IMPLICIT)
-            }, 120)
+            }, 150)
         }
     }
 
     private fun closeDrawer() {
-        if (!::drawerView.isInitialized) return
+        if (!::drawerView.isInitialized || !drawerOpen) return
+        drawerOpen = false
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
         searchBox.clearFocus()
-        drawerView.visibility = View.GONE
+
+        drawerView.animate().alpha(0f).translationY(dp(100).toFloat()).setDuration(dur(240))
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction { if (!drawerOpen) drawerView.visibility = View.GONE }.start()
+
         homeView.visibility = View.VISIBLE
+        homeView.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(dur(380))
+            .setInterpolator(DecelerateInterpolator(2f)).start()
         letterBar.visibility = View.VISIBLE
+        letterBar.animate().alpha(1f).translationX(0f).setDuration(dur(380)).start()
+        renderFavourites(animate = true)
     }
 
     // ================= system actions =================
@@ -499,22 +913,27 @@ class MainActivity : Activity() {
                 row = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(8), dp(10), dp(8), dp(10))
+                    setPadding(dp(10), dp(10), dp(10), dp(10))
+                    background = RippleDrawable(
+                        ColorStateList.valueOf(withAlpha(look.accent, 0.30f)), null,
+                        GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.WHITE) }
+                    )
                 }
                 iv = ImageView(this@MainActivity)
                 tv = TextView(this@MainActivity).apply {
-                    setTextColor(Color.WHITE)
                     textSize = 18f
                     isSingleLine = true
                     setPadding(dp(16), 0, 0, 0)
                 }
-                row.addView(iv, LinearLayout.LayoutParams(dp(40), dp(40)))
+                row.addView(iv, LinearLayout.LayoutParams(dp(42), dp(42)))
                 row.addView(tv)
                 row.tag = Pair(iv, tv)
             }
             val app = items[position]
             iv.setImageDrawable(icon(app))
             tv.text = app.label
+            tv.setTextColor(look.text)
+            tv.typeface = font()
             return row
         }
 
