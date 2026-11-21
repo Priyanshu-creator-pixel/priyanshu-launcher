@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- The 3D home environment is drawn with OpenGL ES 3.0 shaders -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+
     <!-- Pull down the notification shade with a swipe -->
     <uses-permission android:name="android.permission.EXPAND_STATUS_BAR" />
     <!-- Open the system "Uninstall app?" dialog from the long-press menu -->
@@ -17,7 +20,7 @@
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/sym_def_app_icon"
-        android:label="Priyanshu Launcher"
+        android:label="Multiverse X"
         android:theme="@android:style/Theme.DeviceDefault.Wallpaper.NoTitleBar">
 
         <activity

@@ -28,6 +28,11 @@ object Themes {
             Fx.NONE, "sans-serif-light", wallpaper = true
         ),
         LauncherTheme(
+            "Holo Core", "Flagship 3D reactor command centre",
+            intArrayOf(c("#00060C"), c("#021420"), c("#042233")), c("#40D9FF"), c("#B3F5FF"), c("#E6FCFF"),
+            Fx.STARS, "sans-serif-light"
+        ),
+        LauncherTheme(
             "Nebula", "Twinkling stars and shooting stars",
             intArrayOf(c("#0B0420"), c("#1A0B3D"), c("#2B1055")), c("#B388FF"), c("#64B5F6"), c("#EDE7F6"),
             Fx.STARS, "sans-serif-thin"
